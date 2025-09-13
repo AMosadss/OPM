@@ -485,15 +485,67 @@ end
 local function getBarrels()
     local barrels = {}
     local success, result = pcallWrap(function()
-        if workspace:FindFirstChild("Barrels") and workspace.Barrels:FindFirstChild("Barrels") then
-            for _, barrel in pairs(workspace.Barrels.Barrels:GetChildren()) do
-                if barrel and barrel.Parent and barrel:FindFirstChild("ClickDetector") then
-                    table.insert(barrels, barrel)
+        -- Try multiple locations for barrels
+        local barrelLocations = {
+            workspace:FindFirstChild("Barrels"),
+            workspace:FindFirstChild("Barrel"),
+            workspace:FindFirstChild("BarrelSpawn"),
+            workspace
+        }
+        
+        for _, location in pairs(barrelLocations) do
+            if location then
+                -- Check direct children
+                for _, item in pairs(location:GetChildren()) do
+                    if item and item.Parent then
+                        -- Check if it's a barrel by name pattern
+                        if item.Name:lower():find("barrel") or item.Name:lower():find("crate") then
+                            if item:FindFirstChild("ClickDetector") then
+                                print("🔍 Found barrel with ClickDetector:", item.Name)
+                                table.insert(barrels, item)
+                            elseif item:IsA("Model") then
+                                -- Check if any part in the model has ClickDetector
+                                for _, part in pairs(item:GetDescendants()) do
+                                    if part:IsA("BasePart") and part:FindFirstChild("ClickDetector") then
+                                        print("🔍 Found barrel part with ClickDetector:", item.Name, "->", part.Name)
+                                        table.insert(barrels, item)
+                                        break
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+                
+                -- Check nested structure (like workspace.Barrels.Barrels)
+                if location:FindFirstChild("Barrels") then
+                    for _, barrel in pairs(location.Barrels:GetChildren()) do
+                        if barrel and barrel.Parent and barrel:FindFirstChild("ClickDetector") then
+                            print("🔍 Found barrel in nested structure:", barrel.Name)
+                            table.insert(barrels, barrel)
+                        elseif barrel and barrel:IsA("Model") then
+                            -- Check if any part in the model has ClickDetector
+                            for _, part in pairs(barrel:GetDescendants()) do
+                                if part:IsA("BasePart") and part:FindFirstChild("ClickDetector") then
+                                    print("🔍 Found barrel part in nested structure:", barrel.Name, "->", part.Name)
+                                    table.insert(barrels, barrel)
+                                    break
+                                end
+                            end
+                        end
+                    end
                 end
             end
         end
+        
+        print("📊 Total barrels found:", #barrels)
         return barrels
     end)
+    
+    if not success then
+        print("❌ Error getting barrels:", result)
+    end
+    
     return success and result or {}
 end
 
@@ -897,43 +949,116 @@ local function autoBarrel(barrelCountLabel, statusBar)
         barrelCountLabel.Text = tostring(#barrels)
         
         if #barrels > 0 then
-            statusBar.Text = "Magnetizing barrels..."
-            
-            local angleStep = (2 * math.pi) / math.max(#barrels, 1)
-            local radius = 7
+            statusBar.Text = "Teleporting to barrels and using ClickDetector..."
             
             for i, barrel in pairs(barrels) do
                 if not isBarrelFarming then break end
                 
-                local angle = angleStep * (i - 1)
-                local offset = Vector3.new(
-                    math.cos(angle) * radius,
-                    3,
-                    math.sin(angle) * radius
-                )
-                
-                if teleportBarrelToPlayer(barrel, offset) then
-                    wait(0.1)
-                    
-                    if bypassClickDetector(barrel) then
-                        barrelCount = barrelCount + 1
-                        statusBar.Text = "Farmed " .. i .. "/" .. #barrels .. " barrels"
-                        wait(0.1)
-                    else
-                        statusBar.Text = "Failed to farm barrel " .. i .. "/" .. #barrels
-                        wait(0.05)
+                -- Get barrel position
+                local barrelPosition
+                if barrel:IsA("BasePart") then
+                    barrelPosition = barrel.Position
+                elseif barrel:IsA("Model") then
+                    local part = barrel:FindFirstChild("HumanoidRootPart") or barrel.PrimaryPart or barrel:FindFirstChildOfClass("BasePart")
+                    if part then
+                        barrelPosition = part.Position
                     end
+                end
+                
+                if barrelPosition and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                    -- Teleport player to barrel location
+                    local humanoidRootPart = player.Character.HumanoidRootPart
+                    local teleportPosition = barrelPosition + Vector3.new(0, 5, 0) -- Teleport slightly above the barrel
+                    
+                    humanoidRootPart.CFrame = CFrame.new(teleportPosition)
+                    print("🚀 Teleported to barrel " .. i .. " at position:", barrelPosition)
+                    
+                    wait(0.2) -- Wait for teleportation to complete
+                    
+                    -- Use ClickDetector to interact with barrel
+                    local clickDetector = barrel:FindFirstChild("ClickDetector")
+                    
+                    -- If no ClickDetector on the barrel itself, check its descendants
+                    if not clickDetector and barrel:IsA("Model") then
+                        for _, part in pairs(barrel:GetDescendants()) do
+                            if part:IsA("BasePart") and part:FindFirstChild("ClickDetector") then
+                                clickDetector = part:FindFirstChild("ClickDetector")
+                                print("🔍 Found ClickDetector in barrel part:", part.Name)
+                                break
+                            end
+                        end
+                    end
+                    
+                    if clickDetector then
+                        print("🎯 Using ClickDetector on barrel " .. i)
+                        
+                        -- Try multiple methods to activate ClickDetector
+                        local clickSuccess = false
+                        
+                        -- Method 1: fireclickdetector
+                        if fireclickdetector then
+                            local success, result = pcall(function()
+                                fireclickdetector(clickDetector)
+                                return true
+                            end)
+                            if success then
+                                clickSuccess = true
+                                print("✅ Used fireclickdetector on barrel " .. i)
+                            end
+                        end
+                        
+                        -- Method 2: MouseClick event
+                        if not clickSuccess and clickDetector.MouseClick then
+                            local success, result = pcall(function()
+                                clickDetector.MouseClick:Fire(player)
+                                return true
+                            end)
+                            if success then
+                                clickSuccess = true
+                                print("✅ Used MouseClick event on barrel " .. i)
+                            end
+                        end
+                        
+                        -- Method 3: firesignal
+                        if not clickSuccess and firesignal and clickDetector.MouseClick then
+                            local success, result = pcall(function()
+                                firesignal(clickDetector.MouseClick, player)
+                                return true
+                            end)
+                            if success then
+                                clickSuccess = true
+                                print("✅ Used firesignal on barrel " .. i)
+                            end
+                        end
+                        
+                        if clickSuccess then
+                            barrelCount = barrelCount + 1
+                            statusBar.Text = "Farmed " .. i .. "/" .. #barrels .. " barrels"
+                            print("🎉 Successfully farmed barrel " .. i)
+                        else
+                            statusBar.Text = "Failed to farm barrel " .. i .. "/" .. #barrels
+                            print("❌ Failed to farm barrel " .. i)
+                        end
+                    else
+                        statusBar.Text = "No ClickDetector found on barrel " .. i .. "/" .. #barrels
+                        print("⚠️ No ClickDetector found on barrel " .. i)
+                    end
+                    
+                    wait(0.3) -- Wait before next barrel
                 else
-                    wait(0.05)
+                    print("⚠️ Invalid barrel or character not found for barrel " .. i)
+                    wait(0.1)
                 end
             end
             
             if isBarrelFarming then
                 statusBar.Text = "All barrels processed! Scanning..."
+                print("🔄 All barrels processed, waiting before next scan...")
                 wait(3)
             end
         else
             statusBar.Text = "No barrels found, scanning..."
+            print("🔍 No barrels found, waiting before next scan...")
             wait(1)
         end
     end)
